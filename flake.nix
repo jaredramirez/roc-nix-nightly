@@ -57,7 +57,10 @@
           installPhase = ''
             runHook preInstall
 
-            install -Dm755 roc "$out/bin/roc"
+            mkdir -p "$out/bin" "$out/libexec/roc"
+            cp -R ./. "$out/libexec/roc/"
+            chmod 755 "$out/libexec/roc/roc"
+            ln -s ../libexec/roc/roc "$out/bin/roc"
             install -Dm644 LICENSE legal_details -t "$out/share/licenses/roc"
 
             runHook postInstall
