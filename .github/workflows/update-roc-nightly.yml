@@ -1,0 +1,168 @@
+name: Update Roc nightly
+
+on:
+  schedule:
+    # Run away from the top of the hour, when scheduled Actions are busiest.
+    - cron: "17 4 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: update-roc-nightly
+  cancel-in-progress: false
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@v22
+
+      - name: Update Roc release metadata
+        id: update
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          release_json="$(mktemp)"
+          trap 'rm -f "$release_json"' EXIT
+          gh api repos/roc-lang/nightlies/releases/latest > "$release_json"
+
+          tag="$(jq -er '.tag_name' "$release_json")"
+          if [[ ! "$tag" =~ ^nightly- ]]; then
+            echo "Unexpected Roc nightly tag: $tag" >&2
+            exit 1
+          fi
+
+          current_tag="$(
+            sed -nE 's|.*roc-lang/nightlies/releases/download/([^"/]+).*|\1|p' flake.nix
+          )"
+          if [[ "$tag" == "$current_tag" ]]; then
+            echo "Roc $tag is already pinned."
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          declare -A platforms=(
+            [aarch64-darwin]=macos_apple_silicon
+            [aarch64-linux]=linux_arm64
+            [x86_64-linux]=linux_x86_64
+          )
+          declare -A hashes=()
+          release_date=""
+          build_id=""
+
+          for system in aarch64-darwin aarch64-linux x86_64-linux; do
+            platform="${platforms[$system]}"
+            asset="$(
+              jq -er --arg prefix "roc_nightly-${platform}-" '
+                [.assets[] | select(
+                  (.name | startswith($prefix)) and
+                  (.name | endswith(".tar.gz"))
+                )]
+                | if length == 1 then .[0]
+                  else error("expected exactly one archive for " + $prefix)
+                  end
+              ' "$release_json"
+            )"
+            asset_name="$(jq -er '.name' <<< "$asset")"
+            asset_url="$(jq -er '.browser_download_url' <<< "$asset")"
+
+            if [[ "$asset_name" =~ ^roc_nightly-${platform}-([0-9]{4}-[0-9]{2}-[0-9]{2})-([0-9a-f]+)\.tar\.gz$ ]]; then
+              asset_date="${BASH_REMATCH[1]}"
+              asset_build_id="${BASH_REMATCH[2]}"
+            else
+              echo "Unexpected Roc archive name: $asset_name" >&2
+              exit 1
+            fi
+
+            if [[ -z "$release_date" ]]; then
+              release_date="$asset_date"
+              build_id="$asset_build_id"
+            elif [[ "$asset_date" != "$release_date" || "$asset_build_id" != "$build_id" ]]; then
+              echo "Roc release archives do not have matching versions." >&2
+              exit 1
+            fi
+
+            echo "Prefetching $asset_name"
+            hashes[$system]="$(
+              nix store prefetch-file --json "$asset_url" | jq -er '.hash'
+            )"
+          done
+
+          export ROC_VERSION_DATE="$release_date"
+          export ROC_BUILD_ID="$build_id"
+          export ROC_BASE_URL="https://github.com/roc-lang/nightlies/releases/download/$tag"
+          export ROC_HASH_AARCH64_DARWIN="${hashes[aarch64-darwin]}"
+          export ROC_HASH_AARCH64_LINUX="${hashes[aarch64-linux]}"
+          export ROC_HASH_X86_64_LINUX="${hashes[x86_64-linux]}"
+
+          python3 - <<'PY'
+          import os
+          import re
+          from pathlib import Path
+
+          path = Path("flake.nix")
+          text = path.read_text()
+
+          replacements = [
+              (r'(?m)^(\s*versionDate = ")[^"]+(";)$', os.environ["ROC_VERSION_DATE"]),
+              (r'(?m)^(\s*buildId = ")[^"]+(";)$', os.environ["ROC_BUILD_ID"]),
+              (r'(?m)^(\s*baseUrl = ")[^"]+(";)$', os.environ["ROC_BASE_URL"]),
+              (
+                  r'(?ms)^(\s*aarch64-darwin = \{\s+platform = "macos_apple_silicon";\s+hash = ")[^"]+(";)',
+                  os.environ["ROC_HASH_AARCH64_DARWIN"],
+              ),
+              (
+                  r'(?ms)^(\s*aarch64-linux = \{\s+platform = "linux_arm64";\s+hash = ")[^"]+(";)',
+                  os.environ["ROC_HASH_AARCH64_LINUX"],
+              ),
+              (
+                  r'(?ms)^(\s*x86_64-linux = \{\s+platform = "linux_x86_64";\s+hash = ")[^"]+(";)',
+                  os.environ["ROC_HASH_X86_64_LINUX"],
+              ),
+          ]
+
+          for pattern, value in replacements:
+              text, count = re.subn(
+                  pattern,
+                  lambda match: f"{match.group(1)}{value}{match.group(2)}",
+                  text,
+              )
+              if count != 1:
+                  raise SystemExit(f"expected one match for {pattern!r}, found {count}")
+
+          path.write_text(text)
+          PY
+
+          echo "version=$release_date-$build_id" >> "$GITHUB_OUTPUT"
+          echo "changed=true" >> "$GITHUB_OUTPUT"
+
+      - name: Validate flake
+        run: nix flake check --all-systems --no-build
+
+      - name: Commit update
+        if: steps.update.outputs.changed == 'true'
+        env:
+          VERSION: ${{ steps.update.outputs.version }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          git diff --check
+          git diff --exit-code --quiet -- flake.lock
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add flake.nix
+          git commit -m "Update Roc nightly to $VERSION"
+          git push
