@@ -17,21 +17,21 @@
       forAllSystems = nixpkgs.lib.genAttrs systems;
 
       rocRelease = {
-        versionDate = "2026-11-18";
-        buildId = "a520eed";
-        baseUrl = "https://github.com/roc-lang/nightlies/releases/download/nightly-2026-11-18-a520eed";
+        versionDate = "2026-11-20";
+        buildId = "3b29392";
+        baseUrl = "https://github.com/roc-lang/nightlies/releases/download/nightly-2026-11-20-3b29392";
         archives = {
           aarch64-darwin = {
             platform = "macos_apple_silicon";
-            hash = "sha256-O5ujzHNX5HkW8DaJl5vmw1wZhqH9WlS/DQbqYJ/gZI0=";
+            hash = "sha256-weSItnObTn8wD41PDbXEoLqS6y1w4P91EPP6uEQYyXc=";
           };
           aarch64-linux = {
             platform = "linux_arm64";
-            hash = "sha256-Fvsr1azozXjjSFQ2OYBk0svl4o08hOFVskYNMhAXIsM=";
+            hash = "sha256-ClD4G+4ZEb6R1R2PRFqOnBphJU4Tgf1nV+gG8pnz/po=";
           };
           x86_64-linux = {
             platform = "linux_x86_64";
-            hash = "sha256-2TlUlfndB8OWKcM/FW9/7mjo0i+KdkUi5c3RzDCHm1E=";
+            hash = "sha256-ToooS9sZ8bmlh8OoBlYyxQgAiKT3SVPUf5l1RWYwzc0=";
           };
         };
       };
